@@ -1,3 +1,6 @@
+# Changes in this fork
+- Added optional argument `Output-Path`, if not used the folder in which the executable is located is used.
+
 # Downloader for 1fichier.com using Tor
 
 Content in [Tor](https://www.torproject.org/) is often saved on hosters like [1fichier.com](https://1fichier.com/).
@@ -15,11 +18,11 @@ I grabbed this script and rewrote most parts of it. My improvements are
 
 ## Usage
 
-`./1fichier.sh File-With-URLs`
+`./1fichier.sh File-With-URLs [Output-Path]`
 
 or
 
-`./1fichier.sh URL`
+`./1fichier.sh URL [Output-Path]`
 
 ## Contact
 
