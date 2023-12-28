@@ -16,6 +16,8 @@
 
 # Some lines were taken from the script 1fichier.sh by SoupeAuLait@Rindexxx
 
+#region Functions
+
 checkTor() {
 	local torPort=
 	for port in 9050 9150; do
@@ -53,6 +55,21 @@ cancelDownload() {
 	exit 1
 }
 
+createDirectory() {
+	local directoryPath=${1}
+
+	# Checks if the directory doesn't exist
+	if [ ! -d "$directoryPath" ]; then
+		# Attempts to create the directory
+		# The condition checks the result of the mkdir command
+		if ! mkdir -p "$directoryPath"; then
+			# If mkdir fails, it prints an error message and exits the script with an error code
+			echo "Failed to create directory path '$directoryPath'"
+			exit 1
+		fi
+	fi
+}
+
 downloadFile() {
 	trap cancelDownload SIGINT SIGTERM
 
@@ -60,8 +77,18 @@ downloadFile() {
 	echo "Processing \"${url}\""...
 	echo -n "Search for a circuit without wait time..."
 
-	local baseDir=$(pwd)
-	local tempDir=${baseDir}/$(mktemp --directory "tmp.XXX")
+	# Check for second argument
+	if [ -z "${2}" ]; then
+		# Set current path if second argument
+		local baseDir=$(pwd)
+	else
+		# Create directory if not existend
+		createDirectory "${2}"
+		# Sets passed arguemnt as directory
+		local baseDir=${2}
+	fi
+	
+	local tempDir=$(mktemp --directory "${baseDir}/tmp.XXX")
 	lastTempDir=${tempDir}
 
 	local filenameRegEx='>Filename :<.*<td class="normal">(.*)</td>.*>Date :<'
@@ -69,6 +96,7 @@ downloadFile() {
 	local count=1
 	local slotFound="false"
 	local alreadyDownloaded="false"
+
 	while [ ${count} -le ${maxCount} ]; do
 		count=$((${count} + 1))
 		echo -n "."
@@ -77,7 +105,7 @@ downloadFile() {
 		torUser="user-${RANDOM}"
 		torPassword="password-${RANDOM}"
 
-		local downloadPage=$(tcurl --insecure --cookie-jar "${cookies}" --silent --show-error "${url}")
+		local downloadPage=$(tcurl --cookie-jar "${cookies}" --silent --show-error "${url}")
 		if [[ "${downloadPage}" =~ ${filenameRegEx} ]]; then
 			local filename=${BASH_REMATCH[1]}
 			if [ -e "${baseDir}/${filename}" ]; then
@@ -112,7 +140,7 @@ downloadFile() {
 		return
 	fi
 
-	local downloadLinkPage=$(tcurl --insecure --location --cookie "${cookies}" --cookie-jar "${cookies}" --silent --show-error --form "submit=Download" --form "adz=${get_me}" "${url}")
+	local downloadLinkPage=$(tcurl --location --cookie "${cookies}" --cookie-jar "${cookies}" --silent --show-error --form "submit=Download" --form "adz=${get_me}" "${url}")
 	local downloadLink=$(echo "${downloadLinkPage}" | grep --after-context=2 '<div style="width:600px;height:80px;margin:auto;text-align:center;vertical-align:middle">' | grep --only-matching --perl-regexp '<a href="\K[^"]+')
 	if [ "${downloadLink}" ]; then
 		tcurl --insecure --cookie "${cookies}" --referer "${url}" --output "${tempDir}/${filename}" "${downloadLink}" --remote-header-name --remote-name
@@ -136,14 +164,40 @@ downloadFile() {
 	trap - SIGINT SIGTERM
 }
 
-if [ "$#" -ne 1 ]; then
+helpText() {
 	echo "Usage:"
-	echo "${0} File-With-URLs"
+	echo "${0} File-With-URLs [Output-Path]"
 	echo "or"
-	echo "${0} URL"
+	echo "${0} URL [Output-Path]"
+}
+
+#endregion
+
+
+#region Main
+
+# Check for more than two arguments
+if [ "$#" -gt 2 ]; then
+	echo "ERROR: Too many arguments passed"
+	helpText
 	exit 1
+# Check for first mandatory argument "File-With-URLs" or "URL"
+elif [ -z "$1" ]; then
+	echo "ERROR: Mandatory argument is missing"
+	helpText
+	exit 1
+else
+	# Set mandatory argument "File-With-URLs" or "URL"
+	downloadSource=${1}
 fi
 
+# Check for second optional argument "Output-Path"
+if [ ! -z "$2" ]; then
+	# Set optional argument "Output-Path"
+	outputPath=${2}
+fi
+
+# Check for TOR
 torPort=$(checkTor)
 if [ "${torPort}" = "" ]; then
 	echo "Tor is not running!"
@@ -152,15 +206,16 @@ fi
 echo "Tor is listening on port ${torPort}"
 
 lastTempDir=
-downloadSource=${1}
 if [[ "${downloadSource}" =~ "1fichier.com" ]]; then
-	downloadFile "${downloadSource}"
+	downloadFile "${downloadSource}" "${outputPath}"
 else
 	if [ ! -f "${downloadSource}" ]; then
 		echo "Unable to read file \"${downloadSource}\"!"
 		exit 1
 	fi
 	while IFS= read -r line; do
-		downloadFile "${line}"
+		downloadFile "${line}" "${outputPath}"
 	done <"${downloadSource}"
 fi
+
+#endregion
