@@ -1,5 +1,6 @@
 # Changes in this fork
 - Added optional argument `Output-Path`, if not used the folder in which the executable is located is used.
+- Added optional argument `--verbose`
 
 # Downloader for 1fichier.com using Tor
 
@@ -18,11 +19,11 @@ I grabbed this script and rewrote most parts of it. My improvements are
 
 ## Usage
 
-`./1fichier.sh File-With-URLs [Output-Path]`
+`./1fichier.sh File-With-URLs [Output-Path] [--verbose]`
 
 or
 
-`./1fichier.sh URL [Output-Path]`
+`./1fichier.sh URL [Output-Path] [--verbose]`
 
 ## Contact
 
