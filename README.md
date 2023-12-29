@@ -25,12 +25,7 @@ I grabbed this script and rewrote most parts of it. My improvements are
 
 1. Download the Docker dockerfile `wget https://raw.githubusercontent.com/Yemtex/1fichier-downloader/master/1fichier.dockerfile`
 3. Build Docker image from dockerfile `docker build -t 1fichier -f 1fichier.dockerfile .`
-4. Build Docker container from image
-```
-docker run -d --name 1fichier \
---mount type=bind,source=/opt/docker/storage,target=/storage \
-1fichier:latest
-```
+4. Build Docker container from image `docker run -d --name 1fichier 1fichier:latest`
 4. Open interactive TTY `docker exec -it 1fichier sh`
 5. Run script like standalone script
 
