@@ -18,45 +18,65 @@
 
 #region Functions
 
+verbosePrint() {
+	if [ "$verbose" = true ]; then
+        echo "DEBUG: $1" >&2
+    fi
+}
+
 checkTor() {
-	local torPort=
+	local torPort=""
+	local nonTorIP=$(curl -s https://check.torproject.org/api/ip)
+	verbosePrint "Non Tor IP: $nonTorIP"
+
 	for port in 9050 9150; do
-		echo "" 2>/dev/null >/dev/tcp/127.0.0.1/${port}
-		if [ "$?" = "0" ]; then
-			torPort=${port}
+		verbosePrint "Port: $port"
+
+		local torIP=$(curl -x socks5h://127.0.0.1:$port -s https://check.torproject.org/api/ip)
+		verbosePrint "Tor IP: $torIP"
+
+		local isTor=$(echo "$torIP" | jq '.IsTor')
+		verbosePrint "Tor active: $isTor"
+
+		if [ "$isTor" = "true" ]; then
+			verbosePrint "Tor works"
+			torPort="$port"
+			break
 		fi
 	done
-	echo ${torPort}
+
+	echo $torPort
 }
 
 tcurl() {
-	curl --proxy "socks5h://${torUser}:${torPassword}@127.0.0.1:${torPort}" --connect-timeout 15 --user-agent "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0" --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" --header "Accept-Language: en-US,en;q=0.5" --header "Accept-Encoding: gzip, deflate, br" --compressed "$@"
+	if [ "$verbose" = true ]; then (echo $@ >&2); fi
+
+	curl --proxy "socks5h://$torUser:$torPassword@127.0.0.1:$torPort" --connect-timeout 15 --user-agent "Mozilla/5.0 (Windows NT 10.0; rv:109.0) Gecko/20100101 Firefox/115.0" --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8" --header "Accept-Language: en-US,en;q=0.5" --header "Accept-Encoding: gzip, deflate, br" --compressed "$@"
 }
 
 failedDownload() {
-	local baseDir=${1}
-	local url=${2}
-	echo "${url}" >>"${baseDir}/failed.txt"
+	verbosePrint "Write failed links to file"
+	echo "$1" >> "$2/failed.txt"
 }
 
 removeTempDir() {
-	local tempDir=${1}
-	rm --recursive "${tempDir}"
+	verbosePrint "Remove temp dir"
+	rm --recursive --force "$1"
 }
 
 removeCookies() {
-	local cookieFile=${1}
-	rm --force "${cookieFile}"
+	verbosePrint "Remove temp cookies"
+	rm --force "$1"
 }
 
 cancelDownload() {
-	echo "Download cancelled."
-	removeTempDir "${lastTempDir}"
+	verbosePrint "Download cancelled"
+	removeTempDir "$lastTempDir"
 	exit 1
 }
 
 createDirectory() {
-	local directoryPath=${1}
+	local directoryPath="$1"
 
 	# Checks if the directory doesn't exist
 	if [ ! -d "$directoryPath" ]; then
@@ -64,111 +84,165 @@ createDirectory() {
 		# The condition checks the result of the mkdir command
 		if ! mkdir -p "$directoryPath"; then
 			# If mkdir fails, it prints an error message and exits the script with an error code
-			echo "Failed to create directory path '$directoryPath'"
+			echo "ERROR: Failed to create directory path '$directoryPath'"
 			exit 1
+		else
+			verbosePrint "Created directory '$directoryPath'"
 		fi
+	else
+		verbosePrint "Directory already exists '$directoryPath'"
 	fi
 }
 
 downloadFile() {
 	trap cancelDownload SIGINT SIGTERM
 
-	local url=${1}
-	echo "Processing \"${url}\""...
-	echo -n "Search for a circuit without wait time..."
+	# Save argument 'URL'
+	local url="$1"
+	echo "Processing $url"
+	echo -n "Search for a circuit without wait time."
 
-	# Check for second argument
-	if [ -z "${2}" ]; then
-		# Set current path if second argument
-		local baseDir=$(pwd)
-	else
-		# Create directory if not existend
-		createDirectory "${2}"
-		# Sets passed arguemnt as directory
-		local baseDir=${2}
-	fi
+	# Save argument 'Output-Path'
+	local baseDir="$2"
+	# Create directory if not existend
+	createDirectory "$baseDir"
+
+	verbosePrint "Function BaseDir: $baseDir"
 	
-	local tempDir=$(mktemp --directory "${baseDir}/tmp.XXX")
-	lastTempDir=${tempDir}
+	# Create temp directory for download file
+	local tempDir=$(mktemp -d "$baseDir/tmp.XXX")
+	lastTempDir=$tempDir
 
-	local filenameRegEx='>Filename :<.*<td class="normal">(.*)</td>.*>Date :<'
+	verbosePrint "Function TempDir: $tempDir"
+
+	# Loop limits
 	local maxCount=500
-	local count=1
+	local count=0
+
+	# Loop global vars
+	local filenameRegEx='>Filename :<.*<td class="normal">(.*)</td>.*>Date :<'
 	local slotFound="false"
 	local alreadyDownloaded="false"
 
-	while [ ${count} -le ${maxCount} ]; do
-		count=$((${count} + 1))
+	# Check if download is available, downloading the html page, checking, ...
+	# Try $maxCount times
+	while [ $count -le $maxCount ]; do
+		count=$(($count + 1))
+		verbosePrint "===== Inner Loop ====="
+		verbosePrint "Count: $count"
 		echo -n "."
 
-		local cookies=$(mktemp --tmpdir="${tempDir}" "cookies.XXX")
-		torUser="user-${RANDOM}"
-		torPassword="password-${RANDOM}"
+		# Create random Tor credentials
+		torUser="user-$RANDOM"
+		torPassword="password-$RANDOM"
 
-		local downloadPage=$(tcurl --cookie-jar "${cookies}" --silent --show-error "${url}")
-		if [[ "${downloadPage}" =~ ${filenameRegEx} ]]; then
+		# Create temp file in temp directory for download
+		local cookies=$(mktemp "$tempDir/cookies.XXX")
+		verbosePrint "Cookies: $cookies"
+
+		# Download html of 1fichier file page
+		local downloadPage=$(tcurl --cookie-jar "$cookies" --silent --show-error "$url")
+		if [ "$verbose" = true ]; then (echo "$downloadPage" > "$baseDir/downloadPage.html"); fi
+
+		# Find file name in html
+		if [[ "$downloadPage" =~ ${filenameRegEx} ]]; then
+			# Save first match of regex
 			local filename=${BASH_REMATCH[1]}
-			if [ -e "${baseDir}/${filename}" ]; then
+			verbosePrint "Filename: $filename"
+
+			# Check if file already downloaded
+			if [ -e "$baseDir/$filename" ]; then
 				alreadyDownloaded="true"
 				break
 			fi
 		fi
 
-		grep --extended-regexp --quiet '<span style="color:red">Warning !</span>|<span style="color:red">Attention !</span>' <<<"${downloadPage}"
-		if [ ! "$?" = "0" ]; then
-			local checkSlot=$(grep --only-matching --perl-regexp 'name="adz" value="\K[^"]+' <<<"${downloadPage}")
-			if [ ${checkSlot} ]; then
+		# Check for warning (paid subscription needed)
+		grep --extended-regexp --quiet '<span style="color:red">Warning !</span>|<span style="color:red">Attention !</span>' <<< "$downloadPage"
+		# Check if matches exist
+		if [ ! "$?" = "0" ] ; then
+			verbosePrint "No regex match found"
+			
+			# Check for free download
+			local checkSlot=$(grep --only-matching --perl-regexp 'name="adz" value="\K[^"]+' <<< "$downloadPage")
+			verbosePrint "Check slot: $checkSlot"
+			if [ $checkSlot ]; then
+				# Slot found
 				echo "Found. Start downloading..."
 				slotFound="true"
 				break
 			else
-				removeCookies "${cookies}"
+				# No slot found
+				verbosePrint "No slot found"
+				removeCookies "$cookies"
 			fi
 		else
-			removeCookies "${cookies}"
+			verbosePrint "Regex match found: $?"
+
+			removeCookies "$cookies"
 		fi
 	done
 
-	if [ "${alreadyDownloaded}" = "true" ] || [ "${slotFound}" = "false" ]; then
-		if [ "${alreadyDownloaded}" = "true" ]; then
+	# Check file already exists or slot not found
+	if [ "$alreadyDownloaded" = "true" ] || [ "$slotFound" = "false" ]; then
+		if [ "$alreadyDownloaded" = "true" ]; then
 			echo "Already downloaded. Skipping."
-		elif [ "${slotFound}" = "false" ]; then
-			echo "Unable to get a circuit without wait time after ${maxCount} tries."
-			failedDownload "${baseDir}" "${url}"
+		elif [ "$slotFound" = "false" ]; then
+			echo "Unable to get a circuit without wait time after $maxCount tries."
+			failedDownload "$baseDir" "$url"
 		fi
-		removeTempDir "${tempDir}"
+
+		# Remove temp directory (including temp cookie file)
+		removeTempDir "$tempDir"
+
 		return
 	fi
 
-	local downloadLinkPage=$(tcurl --location --cookie "${cookies}" --cookie-jar "${cookies}" --silent --show-error --form "submit=Download" --form "adz=${get_me}" "${url}")
-	local downloadLink=$(echo "${downloadLinkPage}" | grep --after-context=2 '<div style="width:600px;height:80px;margin:auto;text-align:center;vertical-align:middle">' | grep --only-matching --perl-regexp '<a href="\K[^"]+')
-	if [ "${downloadLink}" ]; then
-		tcurl --insecure --cookie "${cookies}" --referer "${url}" --output "${tempDir}/${filename}" "${downloadLink}" --remote-header-name --remote-name
+	# Download additional page
+	local downloadLinkPage=$(tcurl --location --cookie "$cookies" --cookie-jar "$cookies" --silent --show-error --form "submit=Download" --form "adz=$get_me" "$url")
+	# Extract download link from page
+	local downloadLink=$(echo "$downloadLinkPage" | grep --after-context=2 '<div style="width:600px;height:80px;margin:auto;text-align:center;vertical-align:middle">' | grep --only-matching --perl-regexp '<a href="\K[^"]+')
+
+	verbosePrint "Download link: $downloadLink"
+
+	# Check for download link
+	if [ "$downloadLink" ]; then
+		# Download file
+		tcurl --insecure --cookie "$cookies" --referer "$url" --output "$tempDir/$filename" "$downloadLink" --remote-header-name --remote-name
 		if [ "$?" = "0" ]; then
-			removeCookies "${cookies}"
-			if [ -e "${tempDir}/${filename}" ]; then
-				mv "${tempDir}/${filename}" "${baseDir}/"
+			# Remove temp cookie file
+			removeCookies "$cookies"
+
+			# Check if file already exists
+			if [ -e "$tempDir/$filename" ]; then
+				# Move file to destination directory
+				mv "$tempDir/$filename" "$baseDir/"
 			else
 				echo "Download failed."
-				failedDownload "${baseDir}" "${url}"
+				# Write file for failed links
+				failedDownload "$baseDir" "$url"
 			fi
 		else
-			failedDownload "${baseDir}" "${url}"
+			# Write file for failed links
+			failedDownload "$baseDir" "$url"
 		fi
 	else
 		echo "Unable to extract download-link."
-		failedDownload "${baseDir}" "${url}"
+		# Write file for failed links
+		failedDownload "$baseDir" "$url"
 	fi
-	removeTempDir "${tempDir}"
+
+	# Remove temp directory (including temp cookie file)
+	removeTempDir "$tempDir"
 
 	trap - SIGINT SIGTERM
 }
 
 helpText() {
 	echo "Usage:"
-	echo "${0} File-With-URLs [Output-Path]"
+	echo "$0 File-With-URLs [Output-Path]"
 	echo "or"
-	echo "${0} URL [Output-Path]"
+	echo "$0 URL [Output-Path]"
 }
 
 #endregion
@@ -177,45 +251,65 @@ helpText() {
 #region Main
 
 # Check for more than two arguments
-if [ "$#" -gt 2 ]; then
+if [ "$#" -gt 3 ]; then
 	echo "ERROR: Too many arguments passed"
 	helpText
 	exit 1
+fi
+
 # Check for first mandatory argument "File-With-URLs" or "URL"
-elif [ -z "$1" ]; then
+if [ -n "$1" ]; then
+	# Set mandatory argument "File-With-URLs" or "URL"
+	downloadSource="$1"
+else
 	echo "ERROR: Mandatory argument is missing"
 	helpText
 	exit 1
-else
-	# Set mandatory argument "File-With-URLs" or "URL"
-	downloadSource=${1}
 fi
 
 # Check for second optional argument "Output-Path"
-if [ ! -z "$2" ]; then
+if [ -n "$2" ]; then
 	# Set optional argument "Output-Path"
-	outputPath=${2}
+	outputPath="$2"
+else
+	# Set current path if no second argument passed
+	outputPath="$(pwd)"
 fi
 
-# Check for TOR
+# Set third optional argument "--verbose"
+if [ "$3" = "--verbose" ]; then
+	verbose=true
+else
+	verbose=false
+fi
+
+verbosePrint "DownloadSource: $downloadSource"
+verbosePrint "OutputPath: $outputPath"
+
+# Check for Tor
 torPort=$(checkTor)
-if [ "${torPort}" = "" ]; then
-	echo "Tor is not running!"
+verbosePrint "TorPort: $torPort"
+if [ -z "$torPort" ]; then
+	echo "ERROR: Tor is not running!"
 	exit 1
 fi
-echo "Tor is listening on port ${torPort}"
+echo "Tor is listening on port '$torPort'"
 
-lastTempDir=
-if [[ "${downloadSource}" =~ "1fichier.com" ]]; then
-	downloadFile "${downloadSource}" "${outputPath}"
+lastTempDir=""
+# Check if first argument is direct link
+if [[ "$downloadSource" =~ "1fichier.com" ]]; then
+	downloadFile "$downloadSource" "$outputPath"
 else
-	if [ ! -f "${downloadSource}" ]; then
-		echo "Unable to read file \"${downloadSource}\"!"
+	# First argument is text file
+	if [ -f "$downloadSource" ]; then
+		# Read the file line by line
+		while IFS= read -r line || [ -n "$line" ]; do
+			downloadFile "$line" "$outputPath"
+		done < "$downloadSource"
+	else
+		echo "ERROR: File '$file' does not exist."
 		exit 1
 	fi
-	while IFS= read -r line; do
-		downloadFile "${line}" "${outputPath}"
-	done <"${downloadSource}"
 fi
 
 #endregion
